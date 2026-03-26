@@ -2,194 +2,171 @@
 #include <TlHelp32.h>
 #include <iostream>
 
-namespace driver {
+namespace drv {
 
-	namespace codes {
+	namespace ioctl {
 		const DWORD attach = CTL_CODE(FILE_DEVICE_UNKNOWN, 0x775, METHOD_BUFFERED, FILE_SPECIAL_ACCESS);
 		const DWORD read = CTL_CODE(FILE_DEVICE_UNKNOWN, 0x776, METHOD_BUFFERED, FILE_SPECIAL_ACCESS);
 		const DWORD write = CTL_CODE(FILE_DEVICE_UNKNOWN, 0x777, METHOD_BUFFERED, FILE_SPECIAL_ACCESS);
 	}
 
-	struct Request {
-		HANDLE process_id;
-		PVOID target;
-		PVOID buffer;
+	struct request {
+		HANDLE pid;
+		PVOID  target;
+		PVOID  buffer;
 		SIZE_T size;
 		SIZE_T return_size;
 	};
 
-	class driver_manager {
+	class manager {
 	private:
-		HANDLE handle;
+		HANDLE h;
 
 	public:
-		driver_manager() {
-			handle = CreateFile(L"\\\\.\\AssholeDriver",
-				GENERIC_READ | GENERIC_WRITE,
+		manager() {
+			h = CreateFile(L"\\\\.\\AssholeDriver",
+				GENERIC_READ,
 				0,
 				nullptr,
 				OPEN_EXISTING,
 				FILE_ATTRIBUTE_NORMAL,
 				nullptr);
-
-			if (handle == INVALID_HANDLE_VALUE) {
-				std::cout << "[-] CreateFile failed. Error: " << GetLastError() << std::endl;
-			}
-			else {
-				std::cout << "[+] Driver handle opened successfully" << std::endl;
-			}
 		}
 
-		bool is_valid() {
-			return handle != INVALID_HANDLE_VALUE;
+		bool valid() {
+			return h != INVALID_HANDLE_VALUE;
 		}
 
 		bool attach(DWORD pid) {
-			std::cout << "[*] Attempting to attach to PID: " << pid << std::endl;
+			request r{};
+			r.pid = (HANDLE)pid;
 
-			Request req{};
-			req.process_id = (HANDLE)pid;
-
-			BOOL result = DeviceIoControl(handle, codes::attach,
-				&req, sizeof(req),
-				&req, sizeof(req),
+			return DeviceIoControl(h, ioctl::attach,
+				&r, sizeof(r),
+				&r, sizeof(r),
 				nullptr, nullptr);
-
-			if (!result) {
-				std::cout << "[-] Attach failed. Error: " << GetLastError() << std::endl;
-				return false;
-			}
-
-			std::cout << "[+] Attach successful" << std::endl;
-			return true;
 		}
 
 		template<typename T>
-		T rpm(uintptr_t address) {
-			T buffer{};
+		T read(uintptr_t addr) {
+			T val{};
 
-			std::cout << "[*] Reading " << sizeof(T) << " bytes from address: 0x" << std::hex << address << std::dec << std::endl;
+			request r{};
+			r.target = (PVOID)addr;
+			r.buffer = &val;
+			r.size = sizeof(T);
 
-			Request req{};
-			req.target = (PVOID)address;
-			req.buffer = &buffer;
-			req.size = sizeof(T);
-
-			BOOL result = DeviceIoControl(handle, codes::read,
-				&req, sizeof(req),
-				&req, sizeof(req),
+			DeviceIoControl(h, ioctl::read,
+				&r, sizeof(r),
+				&r, sizeof(r),
 				nullptr, nullptr);
 
-			if (!result) {
-				std::cout << "[-] Read failed. Error: " << GetLastError() << std::endl;
-			}
-			else {
-				std::cout << "[+] Read successful. Return size: " << req.return_size << std::endl;
-			}
-
-			return buffer;
+			return val;
 		}
 
 		template<typename T>
-		bool wpm(uintptr_t address, const T& value) {
-			std::cout << "[*] Writing " << sizeof(T) << " bytes to address: 0x" << std::hex << address << std::dec << std::endl;
+		void write(uintptr_t addr, const T& val) {
+			request r{};
+			r.target = (PVOID)addr;
+			r.buffer = (PVOID)&val;
+			r.size = sizeof(T);
 
-			Request req{};
-			req.target = (PVOID)address;
-			req.buffer = (PVOID)&value;
-			req.size = sizeof(T);
-
-			BOOL result = DeviceIoControl(handle, codes::write,
-				&req, sizeof(req),
-				&req, sizeof(req),
+			DeviceIoControl(h, ioctl::write,
+				&r, sizeof(r),
+				&r, sizeof(r),
 				nullptr, nullptr);
-
-			if (!result) {
-				std::cout << "[-] Write failed. Error: " << GetLastError() << std::endl;
-				return false;
-			}
-
-			std::cout << "[+] Write successful. Return size: " << req.return_size << std::endl;
-			return true;
 		}
 
-		~driver_manager() {
-			if (handle && handle != INVALID_HANDLE_VALUE) {
-				std::cout << "[*] Closing driver handle" << std::endl;
-				CloseHandle(handle);
-				std::cout << "[+] Driver handle closed" << std::endl;
-			}
+		~manager() {
+			if (h && h != INVALID_HANDLE_VALUE)
+				CloseHandle(h);
 		}
 	};
 }
 
 
-DWORD get_process_id(const wchar_t* name) {
-	std::cout << "[*] Searching for process: ";
-	std::wcout << name << std::endl;
-
+DWORD get_pid(const wchar_t* name) {
 	DWORD pid = 0;
 
 	HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (snap == INVALID_HANDLE_VALUE) {
-		std::cout << "[-] Failed to create process snapshot. Error: " << GetLastError() << std::endl;
+	if (snap == INVALID_HANDLE_VALUE)
 		return 0;
-	}
 
-	PROCESSENTRY32W entry{};
-	entry.dwSize = sizeof(entry);
+	PROCESSENTRY32W e{};
+	e.dwSize = sizeof(e);
 
-	if (Process32FirstW(snap, &entry)) {
+	if (Process32FirstW(snap, &e)) {
 		do {
-			if (!_wcsicmp(entry.szExeFile, name)) {
-				pid = entry.th32ProcessID;
-				std::cout << "[+] Process found! PID: " << pid << std::endl;
+			if (!_wcsicmp(e.szExeFile, name)) {
+				pid = e.th32ProcessID;
 				break;
 			}
-		} while (Process32NextW(snap, &entry));
-	}
-
-	if (pid == 0) {
-		std::cout << "[-] Process not found" << std::endl;
+		} while (Process32NextW(snap, &e));
 	}
 
 	CloseHandle(snap);
 	return pid;
 }
 
+
+uintptr_t get_module(DWORD pid, const wchar_t* name) {
+	uintptr_t base = 0;
+
+	HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+	if (snap == INVALID_HANDLE_VALUE)
+		return 0;
+
+	MODULEENTRY32W m{};
+	m.dwSize = sizeof(m);
+
+	if (Module32FirstW(snap, &m)) {
+		do {
+			if (!_wcsicmp(m.szModule, name)) {
+				base = (uintptr_t)m.modBaseAddr;
+				break;
+			}
+		} while (Module32NextW(snap, &m));
+	}
+
+	CloseHandle(snap);
+	return base;
+}
+
 int main() {
-	
-	std::cout << "[*] Client<<" << std::endl;
-	std::cout << "[*] Looking for notepad.exe..." << std::endl;
-	DWORD pid = get_process_id(L"notepad.exe");
+
+	std::cout << "[*] client >> \n";
+
+	DWORD pid = get_pid(L"notepad.exe");
 	if (!pid) {
-		std::cout << "[-] Process not found. Please run notepad.exe first." << std::endl;
-		std::cout << "[*] Press any key to exit..." << std::endl;
-		system("pause");
+		std::cout << "[-] no process\n";
+		std::cin.get();
 		return 1;
 	}
+	std::cout << "[+] pid: " << pid << std::endl;
 
-	std::cout << std::endl << "[*] Creating driver manager instance..." << std::endl;
-	driver::driver_manager drv;
-
-	if (!drv.is_valid()) {
-		std::cout << "[-] Driver open failed. Make sure the driver is loaded." << std::endl;
-		std::cout << "[*] Press any key to exit..." << std::endl;
-		system("pause");
+	drv::manager driver;
+	if (!driver.valid()) {
+		std::cout << "[-] cant connect to the driver. is it loaded?\n";
+		std::cin.get();
 		return 1;
 	}
+	std::cout << "[+] connected to the driver\n";
 
-	std::cout << std::endl << "[*] Attempting to attach to process..." << std::endl;
-	if (!drv.attach(pid)) {
-		std::cout << "[-] Attach failed. Check driver permissions." << std::endl;
-		std::cout << "[*] Press any key to exit..." << std::endl;
-		system("pause");
+	if (!driver.attach(pid)) {
+		std::cout << "[-] attach fail\n";
+		std::cin.get();
 		return 1;
 	}
+	std::cout << "[+] attached!\n";
 
-	std::cout << std::endl << "[+] Successfully attached to process!" << std::endl;
-	
+	uintptr_t base = get_module(pid, L"notepad.exe");
+	if (!base) {
+		std::cout << "[-] module base not found\n";
+		std::cin.get();
+		return 1;
+	}
+	std::cout << "[+] base: 0x" << std::hex << base << std::dec << std::endl;
 
-	system("pause");
+	std::cin.get();
 	return 0;
 }
